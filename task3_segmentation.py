@@ -30,6 +30,8 @@ Usage:
 import argparse
 import sys
 import random
+import os
+import urllib.request
 import numpy as np
 import cv2
 
@@ -37,6 +39,20 @@ import cv2
 # ── Colour palette for classes (consistent across frames) ─────────────────────
 random.seed(42)
 CLASS_COLORS = {}
+
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (17, 18), (18, 19), (19, 20),
+    (0, 17),
+]
+
+TASKS_HAND_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+)
 
 def get_class_color(cls_id: int):
     if cls_id not in CLASS_COLORS:
@@ -94,42 +110,105 @@ def load_mediapipe_hands():
     try:
         import mediapipe as mp
         print("Loading MediaPipe Hands …")
-        hands = mp.solutions.hands.Hands(
-            static_image_mode=False,
-            max_num_hands=4,
-            min_detection_confidence=0.5,
+        if hasattr(mp, "solutions"):
+            hands = mp.solutions.hands.Hands(
+                static_image_mode=False,
+                max_num_hands=4,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+            drawing = mp.solutions.drawing_utils
+            styles = mp.solutions.drawing_styles
+            return {
+                "backend": "solutions",
+                "model": hands,
+                "drawing": drawing,
+                "styles": styles,
+            }
+
+        # Newer MediaPipe builds may only expose the Tasks API.
+        from mediapipe.tasks.python.core.base_options import BaseOptions
+        from mediapipe.tasks.python.vision.hand_landmarker import (
+            HandLandmarker,
+            HandLandmarkerOptions,
+        )
+        from mediapipe.tasks.python.vision.core.vision_task_running_mode import (
+            VisionTaskRunningMode,
+        )
+
+        model_dir = os.path.join(os.path.expanduser("~"), ".cache", "mediapipe")
+        os.makedirs(model_dir, exist_ok=True)
+        model_path = os.path.join(model_dir, "hand_landmarker.task")
+        if not os.path.exists(model_path):
+            print("Downloading MediaPipe hand_landmarker.task …")
+            urllib.request.urlretrieve(TASKS_HAND_MODEL_URL, model_path)
+
+        options = HandLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=model_path),
+            running_mode=VisionTaskRunningMode.IMAGE,
+            num_hands=4,
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
             min_tracking_confidence=0.5,
         )
-        drawing = mp.solutions.drawing_utils
-        styles  = mp.solutions.drawing_styles
-        return hands, drawing, styles
+        hand_landmarker = HandLandmarker.create_from_options(options)
+        return {
+            "backend": "tasks",
+            "model": hand_landmarker,
+            "drawing": None,
+            "styles": None,
+        }
     except ImportError:
         print("[warn] mediapipe not installed. Skipping hand detection.")
-        return None, None, None
+        return None
 
 
-def run_hand_detection(frame_rgb, hands_model, drawing, styles):
+def run_hand_detection(frame_rgb, hands_bundle):
     """
     Run MediaPipe Hands on an RGB frame.
     Draws landmarks directly onto a copy and returns it.
     Returns (annotated_frame_bgr, n_hands_detected)
     """
     import mediapipe as mp
-    results = hands_model.process(frame_rgb)
     out_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
-    n_hands = 0
-    if results.multi_hand_landmarks:
-        n_hands = len(results.multi_hand_landmarks)
-        for hand_lms in results.multi_hand_landmarks:
-            drawing.draw_landmarks(
-                out_bgr,
-                hand_lms,
-                mp.solutions.hands.HAND_CONNECTIONS,
-                styles.get_default_hand_landmarks_style(),
-                styles.get_default_hand_connections_style(),
-            )
-    return out_bgr, n_hands
+    if hands_bundle["backend"] == "solutions":
+        hands_model = hands_bundle["model"]
+        drawing = hands_bundle["drawing"]
+        styles = hands_bundle["styles"]
+        results = hands_model.process(frame_rgb)
+
+        n_hands = 0
+        if results.multi_hand_landmarks:
+            n_hands = len(results.multi_hand_landmarks)
+            for hand_lms in results.multi_hand_landmarks:
+                drawing.draw_landmarks(
+                    out_bgr,
+                    hand_lms,
+                    mp.solutions.hands.HAND_CONNECTIONS,
+                    styles.get_default_hand_landmarks_style(),
+                    styles.get_default_hand_connections_style(),
+                )
+        return out_bgr, n_hands
+
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+    result = hands_bundle["model"].detect(mp_image)
+    hand_landmarks = result.hand_landmarks if result and result.hand_landmarks else []
+
+    for lms in hand_landmarks:
+        points = []
+        for lm in lms:
+            x = int(lm.x * out_bgr.shape[1])
+            y = int(lm.y * out_bgr.shape[0])
+            points.append((x, y))
+
+        for a, b in HAND_CONNECTIONS:
+            if a < len(points) and b < len(points):
+                cv2.line(out_bgr, points[a], points[b], (255, 215, 0), 1, cv2.LINE_AA)
+        for p in points:
+            cv2.circle(out_bgr, p, 2, (0, 255, 255), -1, cv2.LINE_AA)
+
+    return out_bgr, len(hand_landmarks)
 
 
 def main():
@@ -147,9 +226,9 @@ def main():
     # ── Load models ────────────────────────────────────────────────────────────
     yolo = load_yolo(args.model)
     if args.hands:
-        hands_model, mp_drawing, mp_styles = load_mediapipe_hands()
+        hands_bundle = load_mediapipe_hands()
     else:
-        hands_model = None
+        hands_bundle = None
 
     # ── Open video ─────────────────────────────────────────────────────────────
     cap = cv2.VideoCapture(args.video)
@@ -171,7 +250,7 @@ def main():
     print(f"\nVideo: {vid_w}×{vid_h} @ {fps:.2f} fps, {n_frames} frames")
     print(f"Processing: {proc_w}×{proc_h}, every {args.skip} frame(s)")
     print(f"YOLO conf={args.conf}  iou={args.iou}")
-    print(f"Hand detection: {'ON' if hands_model else 'OFF'}\n")
+    print(f"Hand detection: {'ON' if hands_bundle else 'OFF'}\n")
 
     import time
     frame_idx     = 0
@@ -229,10 +308,9 @@ def main():
                 draw_box_label(annotated, x1, y1, x2, y2, label, confs[i], color)
 
         # ── Hand detection (bonus) ────────────────────────────────────────
-        if hands_model:
+        if hands_bundle:
             rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-            annotated, n_hands = run_hand_detection(
-                rgb, hands_model, mp_drawing, mp_styles)
+            annotated, n_hands = run_hand_detection(rgb, hands_bundle)
             if n_hands > 0:
                 cv2.putText(annotated, f"Hands: {n_hands}",
                             (10, proc_h - 15),

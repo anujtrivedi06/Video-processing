@@ -1,4 +1,10 @@
-# Trekion.ai – Robotics Data Engineering Intern Technical Assignment
+# Trekion.ai Robotics Data Engineering Intern — Technical Assessment
+
+## Overview
+
+This repository contains the solution to the Trekion.ai technical assessment. It processes multi-modal sensor data from a robotic camera rig, including a video stream, IMU binary data, and a video timestamp file, to produce three annotated output videos.
+
+---
 
 ## Repository Structure
 
@@ -17,13 +23,13 @@
 
 ## Input Files Required
 
-Place these three files in the same directory as the scripts (or pass full paths via CLI flags):
+Place these files in the same directory as the scripts before running:
 
 | File | Description |
-|---|---|
-| `recording2.mp4` | Raw video, 1920×1080 @ 30fps, ~44s, fisheye lens |
-| `recording2.imu` | Proprietary binary IMU data (TRIMU001 format) |
-| `recording2.vts` | Proprietary binary video timestamp file (TRIVTS01 format) |
+|------|-------------|
+| `recording2.mp4` | Raw camera video (1920×1080, 30 fps, ~44 seconds) |
+| `recording2.imu` | Proprietary binary IMU file (magic: `TRIMU001`) |
+| `recording2.vts` | Proprietary binary video timestamp file (magic: `TRIVTS01`) |
 
 ---
 
@@ -49,92 +55,152 @@ For hand detection (bonus – Task 3 `--hands` flag):
 pip install mediapipe
 ```
 
-### 4. GPU (optional but strongly recommended for Tasks 2 & 3)
-If you have a CUDA-capable GPU, install PyTorch with CUDA support from https://pytorch.org/get-started/locally/.
-The scripts will automatically use the GPU if available.
-
-For CPU-only machines, use `--skip 2` or `--skip 3` on Tasks 2 and 3 to reduce processing time, and consider running on **Google Colab** (free GPU):
-
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/)
+> **GPU note:** Tasks 2 and 3 will automatically use CUDA if a compatible GPU is available. On CPU, use `--skip 2` or `--skip 3` to reduce processing time. Google Colab (free tier) is recommended for GPU access.
 
 ---
 
-## Running the Scripts
+## Usage
 
-### Task 1 – IMU Synchronized Visualization
+### Task 1 — IMU Synchronized Visualization
+
+Parses `.imu` and `.vts` binary files, syncs IMU data to video frames, and renders a stacked output video with scrolling sensor plots and a telemetry HUD.
+
 ```bash
 python task1_imu_sync.py \
     --video  recording2.mp4 \
     --imu    recording2.imu \
     --vts    recording2.vts \
-    --output imu_sync_output.mp4
+    --output imu_sync_output.mp4 \
+    --window 2.0 \
+    --skip   1
 ```
 
-Optional flags:
-- `--window 2.0`  – scrolling time window in seconds (default: 2.0)
-- `--skip 1`      – process every Nth frame; use `--skip 2` or `3` to speed up
+**Arguments:**
 
-### Task 2 – Depth Estimation
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--video` | `recording2.mp4` | Input video path |
+| `--imu` | `recording2.imu` | IMU binary file path |
+| `--vts` | `recording2.vts` | VTS binary file path |
+| `--output` | `imu_sync_output.mp4` | Output video path |
+| `--window` | `2.0` | Rolling time window (seconds) shown in plots |
+| `--skip` | `1` | Process every Nth frame (1 = all frames) |
+
+**Output:** `imu_sync_output.mp4` — original video on top, scrolling accel/gyro/mag plots on the bottom, telemetry HUD top-left.
+
+---
+
+### Task 2 — Monocular Depth Estimation
+
+Runs Depth Anything V2 (or MiDaS as fallback) on each frame to produce dense depth maps.
+
 ```bash
 python task2_depth.py \
-    --video   recording2.mp4 \
-    --output  depth_output.mp4
+    --video recording2.mp4 \
+    --output depth_output.mp4 \
+    --half_res \
+    --skip 5
 ```
 
-Optional flags:
-- `--model depth-anything/Depth-Anything-V2-Small-hf`  – change model (default)
-- `--skip 2`        – process every 2nd frame (recommended on CPU)
-- `--half_res`      – halve input resolution before inference (faster)
-- `--colormap turbo` – choose colormap: `inferno`, `magma`, `turbo`, `plasma`
+**Arguments:**
 
-### Task 3 – Object Detection & Segmentation
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--video` | `recording2.mp4` | Input video path |
+| `--output` | `depth_output.mp4` | Output video path |
+| `--model` | `depth-anything/Depth-Anything-V2-Small-hf` | HuggingFace model ID |
+| `--skip` | `1` | Process every Nth frame |
+| `--half_res` | `False` | Process at half resolution (faster, less memory) |
+| `--colormap` | `inferno` | Colormap: `inferno`, `magma`, `turbo`, or `plasma` |
+
+**Output:** `depth_output.mp4` — side-by-side video: original RGB left, colorized depth map right, with colorbar.
+
+**Model fallback:** If the HuggingFace `transformers` pipeline fails, the script automatically falls back to MiDaS DPT-Large via `torch.hub`.
+
+---
+
+### Task 3 — Object Detection and Segmentation
+
+Runs YOLOv8 instance segmentation on each frame. Optionally runs MediaPipe for hand landmark detection.
+
 ```bash
 python task3_segmentation.py \
-    --video   recording2.mp4 \
-    --output  segmentation_output.mp4
+    --video recording2.mp4 \
+    --output seg_output.mp4 \
+    --model yolov8n-seg \
+    --half_res \
+    --skip 3 \
+    --hands
 ```
 
-Optional flags:
-- `--model yolov8n-seg`  – YOLO variant: `n` (fast) → `s` → `m` → `l` → `x` (accurate)
-- `--conf 0.35`          – detection confidence threshold
-- `--iou 0.45`           – NMS IoU threshold
-- `--skip 1`             – process every Nth frame
-- `--half_res`           – halve resolution for speed
-- `--hands`              – enable MediaPipe hand detection (requires `pip install mediapipe`)
+**Arguments:**
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--video` | `recording2.mp4` | Input video path |
+| `--output` | `segmentation_output.mp4` | Output video path |
+| `--model` | `yolov8n-seg` | YOLO model: `yolov8n-seg` (fast) through `yolov8x-seg` (best quality) |
+| `--skip` | `1` | Process every Nth frame |
+| `--hands` | `False` | Enable MediaPipe hand landmark detection |
+| `--half_res` | `False` | Process at half resolution |
+
+**Output:** `seg_output.mp4` — annotated video with colored segmentation masks, bounding boxes, class labels, confidence scores, and (if `--hands`) hand skeleton landmarks.
 
 ---
 
-## Dependencies
+## Module: `parse_imu.py`
+
+This module is used internally by `task1_imu_sync.py` and can also be run standalone to validate binary files:
+
+```bash
+python parse_imu.py recording2.imu recording2.vts
+```
+
+It exposes three functions:
+- `parse_imu_file(path)` → `pd.DataFrame` — parses the `.imu` binary format
+- `parse_vts_file(path)` → `pd.DataFrame` — parses the `.vts` binary format
+- `sync_imu_to_frames(imu_df, vts_df)` → `dict` — nearest-neighbor timestamp sync
+
+---
+
+## Binary Format Reference
+
+### IMU File (`TRIMU001`)
 
 ```
-opencv-python>=4.8
-numpy>=1.24
-pandas>=2.0
-matplotlib>=3.7
-transformers>=4.40        # for Depth Anything V2 (Task 2)
-torch>=2.0                # PyTorch backend
-torchvision>=0.15
-Pillow>=10.0
-ultralytics>=8.0          # YOLOv8 (Task 3)
+Header (64 bytes):
+  [0:8]   ASCII magic "TRIMU001"
+  [8:12]  uint32 LE — number of sensor types (3)
+  [12:16] uint32 LE — nominal sample rate (~568 Hz)
+  [16:64] metadata / padding
+
+Record (80 bytes, little-endian):
+  [0:8]   uint64  — hardware timestamp (nanoseconds)
+  [8:44]  10× float32 — accel XYZ, gyro XYZ, mag XYZ, temperature
+  [44:80] reserved (zeros)
+```
+
+### VTS File (`TRIVTS01`)
+
+```
+Header (32 bytes):
+  [0:8]   ASCII magic "TRIVTS01"
+  [8:12]  uint32 LE — version (2)
+  [12:32] padding
+
+Record (24 bytes, little-endian):
+  [0:4]   uint32  — record index (0-based)
+  [4:12]  uint64  — hardware timestamp (nanoseconds, same clock as IMU)
+  [12:16] uint32  — video frame index
+  [16:24] uint64  — timestamp in microseconds
 ```
 
 ---
 
-## Notes on Binary Format Parsing
+## Notes
 
-See `parse_imu.py` for the fully documented format specifications reverse-engineered from the binary files. Key findings:
-
-- Both `.imu` and `.vts` files use **little-endian** encoding throughout.
-- Timestamps are **uint64 nanoseconds** on a shared hardware monotonic clock, enabling direct cross-file synchronization.
-- IMU records are **80 bytes** each (10 floats + padding), with a 64-byte file header.
-- VTS records are **24 bytes** each (1× uint32 + 1× uint64 + 1× uint32 + 1× uint64), with a 32-byte file header.
-- Effective IMU sample rate measured from timestamps: **568.6 Hz**.
-- VTS covers frames **28–1343** (1316 frames, 43.8 s), matching the video duration.
+- **Fisheye lens:** The camera uses a wide-angle fisheye lens. True undistortion requires calibration parameters not included with the data. The depth and segmentation scripts process the distorted image directly; Depth Anything V2 and YOLOv8 are both robust to mild barrel distortion.
+- **Performance:** On CPU, Tasks 2 and 3 are slow. Use `--skip 2` or `--skip 3` to speed up, or run on Colab/Kaggle with a free GPU.
+- **Reproducibility:** All random seeds are fixed (segmentation color palette uses `random.seed(42)`).
 
 ---
-
-## Reproducibility
-
-All models are downloaded automatically on first run from official model hubs (HuggingFace, Ultralytics). No manual model download is required.
-
-To fully reproduce, run the three scripts in order on a machine with internet access and at least 4 GB RAM (8 GB+ recommended for Tasks 2 & 3).
